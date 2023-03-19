@@ -5,7 +5,7 @@ use rand::seq::SliceRandom;
 use std::ops::Range;
 use std::fs;
 use std::collections::HashSet;
-
+use std::mem;
 const NumberWords: u32 = 12;
 
 fn main() {
@@ -32,34 +32,152 @@ fn main() {
         }
     }
     
-    let words: HashSet<_>  = indices.into_iter().map(|x| bank[x]).collect();
+    let words: HashSet<String>  = indices.into_iter().map(|x| bank[x].to_string()).collect();
     
 
-    run_simple_game(words);
+    run_simple_game(&words);
 }
 
 
 struct GameState {
-    tries: u16
+    won: bool,
+    tries: u16,
+    word_list: HashSet<String>,
+    target_word: String,
+    used_words: HashSet<String>
+
 }
 
-const TotalTries: u16 = 4;
-const Debug: bool = true;
-fn run_simple_game(words: HashSet<&str>) {
-    
-    let word_list:Vec<_> = words.into_iter().collect();
-    let word_to_guess = word_list.choose(&mut rand::thread_rng()).cloned(); 
-    for word in word_list {
-        println!("{word}")
+enum TryResult {
+    Correct,
+    Invalid,
+    Incorrect
+}
+
+impl GameState {
+
+    fn do_try(&mut self, attempt: String) -> TryResult {
+        let resp = if self.target_word == attempt {
+            self.won = true;
+            TryResult::Correct
+        } else if self.word_list.contains(&attempt) && !self.used_words.contains(&attempt){
+            TryResult::Incorrect
+        } else {
+            self.reset_attempts();
+            TryResult::Invalid
+        };
+
+        match resp {
+            TryResult::Invalid => (),
+            _ => self.tries += 1 
+        }
+
+        resp
     }
 
-    if Debug {
+    fn game_on(&self) -> bool {
+        return self.tries < TOTAL_TRIES && !self.won;
+    }
+
+    fn get_available_choices(&self) -> HashSet<String> {
+        let diff: HashSet<String> =  self.word_list.difference(&self.used_words).cloned().collect();
+        diff
+    }
+
+    fn remove_choice(&mut self) {
+        let choices = self.get_available_choices();
+        let target = HashSet::from([self.target_word.clone()]);
+        let removable: Vec<String> = choices.difference(&target).cloned().collect();
+
+        let size = removable.len();
+        let rand_idx = rand::thread_rng().gen_range(0..size);
+        let to_remove = removable.get(rand_idx).unwrap();
+        self.used_words.insert(to_remove.clone());
+    }
+
+
+    fn reset_attempts(&mut self) {
+        self.tries = 0;
+    }
+
+
+    fn get_attempt_score(&self, attempt: String) -> u32 {
+        let mut score = 0;
+        for (i,c) in attempt.chars().enumerate() { 
+            if c == self.target_word.chars().nth(i).unwrap() {
+                score += 1;
+            }
+        }
+        score
+    }
+}
+
+const TOTAL_TRIES: u16 = 4;
+const DEBUG: bool = true;
+fn run_simple_game(words: &HashSet<String>) {
+    
+    let word_list:Vec<_> = words.into_iter().collect();
+    let word_to_guess = word_list.choose(&mut rand::thread_rng())
+                .cloned().map(|x| x.to_string())
+                .expect("Should have selected a word from list."); 
+    
+    if DEBUG {
         println!("word to guess is {:?}", &word_to_guess);
     }
     
-   /// TODO: add game logic 
+    // TODO: add game logic 
+    let mut game_state = GameState {
+        won: false,
+        tries: 0,
+        word_list: words.clone(),
+        target_word: word_to_guess,
+        used_words: HashSet::new()
+    };
 
+    while game_state.game_on() {
+        let mut agg = String::new();
+        let mut choices: Vec<String> = game_state.get_available_choices()
+                .into_iter()
+                .collect();
 
+        choices.sort();
+        
+        for choice in choices {
+            agg.push_str(&choice);
+            agg.push_str(" ");
+        }
+        
+        println!("Valid choices are :: {agg}");
+        println!("You have {0} attempt(s) left", TOTAL_TRIES - game_state.tries);
+
+        println!();
+        let mut line = String::new();
+        println!("Enter your guess :");
+        std::io::stdin()
+                .read_line(&mut line)
+                .expect("Should get text from stdin");
+        println!("Your guess is {}", line);
+        println!();
+        line = line.trim().to_string();
+        let resp = game_state.do_try(line.clone());
+        match resp {
+            TryResult::Correct => handle_correct_guess(),
+            TryResult::Incorrect => handle_incorrect_guess(game_state.get_attempt_score(line.clone())),
+            TryResult::Invalid => handle_invalid_guess()
+        }
+    }
+}
+
+fn handle_correct_guess() {
+    println!("Hacking successful!");
+}
+
+fn handle_incorrect_guess(score: u32) {
+    println!("You made an incorrect guess: Score={score}");
+}
+
+fn handle_invalid_guess() {
+    println!("You made an invalid guess");
 }
 
 #[derive(Debug)]
