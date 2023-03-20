@@ -1,11 +1,8 @@
-use std::path::Path;
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use rand::seq::SliceRandom;
-use std::ops::Range;
 use std::fs;
 use std::collections::{HashSet, HashMap};
-use std::mem;
 use std::char;
 
 
@@ -48,6 +45,7 @@ fn main() {
 
 struct GameState {
     won: bool,
+    exit: bool,
     tries: u16,
     word_list: HashSet<String>,
     target_word: String,
@@ -90,7 +88,7 @@ impl GameState {
         diff
     }
 
-    fn remove_choice(&mut self) {
+    fn remove_choice(&mut self) -> String {
         let choices = self.get_available_choices();
         let target = HashSet::from([self.target_word.clone()]);
         let removable: Vec<String> = choices.difference(&target).cloned().collect();
@@ -99,6 +97,8 @@ impl GameState {
         let rand_idx = rand::thread_rng().gen_range(0..size);
         let to_remove = removable.get(rand_idx).unwrap();
         self.used_words.insert(to_remove.clone());
+        
+        to_remove.to_string()
     }
 
 
@@ -120,13 +120,15 @@ impl GameState {
 const LEDGER_SIZE: usize  = 17;
 const LEDGER_HEIGHT: usize  = LEDGER_SIZE * 2;
 const LEDGER_WIDTH: usize  = 12;
+const LEDGER_CAPACITY: usize = LEDGER_WIDTH * LEDGER_HEIGHT;
 const CURSES_HEIGHT: usize  = LEDGER_HEIGHT + 12;
 const CURSES_WIDTH: usize  = LEDGER_WIDTH  + 12;
 const FILLER_CHARS: &'static str ="(){}[]<>?:;^&$";
 
-struct UiState<'slice> {
-    ledger: &'slice mut [char],
+struct UiState {
+    ledger: String,
     word_placement: HashMap<usize, String>,
+    cursor_seek: usize,
 }
 
 fn abs_diff(a: usize, b: usize) -> usize {
@@ -137,48 +139,40 @@ fn abs_diff(a: usize, b: usize) -> usize {
     }
 }
 
-impl UiState<'_> {
+impl UiState {
+    
+    fn new() -> UiState {
+
+        let mut con = String::with_capacity(LEDGER_CAPACITY);
+        for _ in 0..con.capacity() {
+            con.push('*');
+        }
+
+        UiState {
+            ledger: con,
+            word_placement: HashMap::new(),
+            cursor_seek: 0
+        }
+    }
 
     fn init(&mut self, words: Vec<&String>) {
         let mut i = 0;
         
         // create random ledger
-        while i < self.ledger.len() {
+        while i < LEDGER_CAPACITY {
             let rand_idx = rand::thread_rng().gen_range(0..FILLER_CHARS.len());
             let rand_ch = FILLER_CHARS.chars().nth(rand_idx).unwrap_or('*');
-            self.ledger[i] = rand_ch;
+            self.ledger.replace_range(i..i+1, &rand_ch.to_string());
             i += 1;
         }
 
-        // add words into ledger
-        // let mut set: HashSet<usize> = HashSet::new();
-        // for word in words {
-        //     let array_len = self.ledger.len();
-        //     let mut row = rand::thread_rng().gen_range(0..LEDGER_HEIGHT);
-        //     while set.contains(&row) {
-        //         row = rand::thread_rng().gen_range(0..LEDGER_HEIGHT);
-        //     }
-        //     set.insert(row);
-        //     let col_max = LEDGER_WIDTH-word.len();
-        //     let col = rand::thread_rng().gen_range(0..col_max);
-        //     self.word_placement.insert((row, col), word.clone());
-        // }
-
-        // for ((row,col), word) in &self.word_placement {
-        //     let offset = row*LEDGER_WIDTH + col;
-        //     let mut i = 0;
-        //     while i <  word.len() {
-        //         let ch = word.chars().nth(i).unwrap_or('*');
-        //         self.ledger[offset + i] = ch;
-        //         i += 1;
-        //     }
-        // }
 
         let mut set: HashSet<usize> = HashSet::new();
         for word in words {
             let array_len = self.ledger.len();
             let mut index = rand::thread_rng().gen_range(0..array_len-word.len());
-            while set.contains(&index) && set.iter().any(|&x| abs_diff(index, x) < word.len() + 1) {
+            while set.contains(&index) || 
+                    set.iter().any(|&x| abs_diff(index, x) < word.len() + 2) {
                 index = rand::thread_rng().gen_range(0..array_len-word.len());
             }
             set.insert(index);
@@ -187,26 +181,25 @@ impl UiState<'_> {
 
         for (index, word) in &self.word_placement {
             let offset = index;
-            let mut i = 0;
-            while i <  word.len() {
-                let ch = word.chars().nth(i).unwrap_or('*');
-                self.ledger[offset + i] = ch;
-                i += 1;
-            }
+            self.ledger.replace_range(offset..&(offset+&word.len()), word.as_str());
+            //let mut i = 0;
+            //while i <  word.len() {
+            //    let ch: u8 = word.chars().nth(i).unwrap_or('*') as u8;
+            //    ledger_slice[offset + i] = ch ;
+            //    i += 1;
+            //}
         }
-
     }
 
-    fn get_ledger(&self) -> String {
+    fn get_full_ledger(&self) -> String {
         let mut row = 0;
         let mut agg = String::new();
-        
         while row < LEDGER_SIZE {
             let mut col = 0;
             while col < LEDGER_WIDTH {
                 let i = (row*LEDGER_WIDTH + col);
-                let ch = self.ledger[i];
-                agg.push(ch);
+                let ch = self.ledger.chars().nth(i).expect("get char from ledger");
+                agg.push(ch as char);
                 col += 1;
             }
             // add space
@@ -214,16 +207,73 @@ impl UiState<'_> {
             col = 0;
             while col < LEDGER_WIDTH {
                 let i = ((LEDGER_SIZE+row)*LEDGER_WIDTH + col);
-                let ch = self.ledger[i];
-                agg.push(ch);
+                let ch = self.ledger.chars().nth(i).unwrap_or('_');
+                agg.push(ch as char);
                 col += 1;
             }
             agg.push('\n');
             row += 1;
         }
-
+        
         agg
     }
+    
+    fn get_left_ledger_frame(&self) -> (usize, usize, usize, usize) {
+        (0,0,LEDGER_WIDTH, LEDGER_SIZE)
+    }
+
+    fn get_right_ledger_frame(&self) -> (usize, usize, usize, usize) {
+        (LEDGER_WIDTH+1, 0, LEDGER_WIDTH+1+LEDGER_WIDTH, LEDGER_SIZE)
+    }
+
+    fn get_cursor_ui_pos(&self) -> (i32, i32) {
+        
+        let mut col = self.cursor_seek % LEDGER_WIDTH;
+        let mut row = self.cursor_seek / LEDGER_WIDTH;
+        
+        let offset  = if row < LEDGER_SIZE {
+            self.get_left_ledger_frame()
+        } else {
+            row = row % LEDGER_SIZE;
+            self.get_right_ledger_frame()
+        };
+        
+        col = offset.0 + col;
+        row = offset.1 + row;
+        
+        (i32::try_from(col).unwrap_or(0), i32::try_from(row).unwrap_or(0))
+    }
+
+    fn mv_cursor_up(&mut self) {
+        let delta = self.cursor_seek.checked_sub(LEDGER_WIDTH);
+        match delta {
+            Some(val) => {self.cursor_seek = val;},
+            None => ()
+        }
+    }
+
+    fn mv_cursor_down(&mut self) {
+        let delta = self.cursor_seek + LEDGER_WIDTH;
+        if delta < self.ledger.len() {
+            self.cursor_seek = delta;
+        }
+    }
+    
+    fn mv_cursor_left(&mut self) {
+        let delta = self.cursor_seek.checked_sub(1);
+        match delta {
+            Some(val) => {self.cursor_seek = val;},
+            None => ()
+        }
+    }
+    
+    fn mv_cursor_right(&mut self) {
+        let delta = self.cursor_seek + 1;
+        if delta < self.ledger.len() {
+            self.cursor_seek = delta;
+        }
+    }
+
 }
 
 fn hacker_ui(words: &HashSet<String>) {
@@ -231,72 +281,88 @@ fn hacker_ui(words: &HashSet<String>) {
         
     let word_list:Vec<_> = words.into_iter().collect();
     let word_to_guess = word_list.choose(&mut rand::thread_rng())
-                .cloned().map(|x| x.to_string())
+                .cloned()
+                .map(|x| x.to_string())
                 .expect("Should have selected a word from list."); 
     
     if DEBUG {
         println!("word to guess is {:?}", &word_to_guess);
     }
-    
-    // TODO: add game logic 
+   
+    // init game state
     let mut game_state = GameState {
-        won: true,
+        won: false,
+        exit: false,
         tries: 0,
         word_list: words.clone(),
         target_word: word_to_guess,
         used_words: HashSet::new()
     };
-    let mut ledger =  [0u8 as char; LEDGER_WIDTH*LEDGER_HEIGHT];
-    let mut ui_state = UiState {
-        ledger: &mut ledger,
-        word_placement: HashMap::new()
-    };
+
+    // init ui state
+    let mut ui_state = UiState::new();
 
     ui_state.init(word_list);
 
-    println!();
-    println!("{}",ui_state.get_ledger());
-
-
-
-    while game_state.game_on() {
-        let mut agg = String::new();
-        let mut choices: Vec<String> = game_state.get_available_choices()
+    let mut agg = String::new();
+    let mut choices: Vec<String> = game_state.get_available_choices()
                 .into_iter()
                 .collect();
 
-        choices.sort();
+    choices.sort();   
+    
+    for choice in choices {
+        agg.push_str(&choice);
+        agg.push_str(" ");
+    }
         
-        for choice in choices {
-            agg.push_str(&choice);
-            agg.push_str(" ");
-        }
-        
-        println!("Valid choices are :: {agg}");
-        println!("You have {0} attempt(s) left", TOTAL_TRIES - game_state.tries);
+    println!("{}", agg);
+    println!();
+    println!("{}",ui_state.get_full_ledger());
 
-        println!();
-        let mut line = String::new();
-        println!("Enter your guess :");
-        std::io::stdin()
-                .read_line(&mut line)
-                .expect("Should get text from stdin");
-        println!("Your guess is {}", line);
-        println!();
-        line = line.trim().to_string();
 
-        if line == "q" {
-            game_state.won = true;
-        }
+    // init ncurses
+    let window = initscr();
+    window.refresh();
+    window.keypad(true);
+    noecho();
+    
 
-        let resp = game_state.do_try(line.clone());
-        match resp {
-            TryResult::Correct => handle_correct_guess(),
-            TryResult::Incorrect => handle_incorrect_guess(game_state.get_attempt_score(line.clone())),
-            TryResult::Invalid => handle_invalid_guess()
+    window.printw(ui_state.get_full_ledger());
+    window.mv(0,0);
+
+    while game_state.game_on() && !game_state.exit {
+        let (col, row) = ui_state.get_cursor_ui_pos();
+        window.mv(row ,col);
+        handle_input(&window, &mut game_state, &mut ui_state); 
+        if game_state.exit {
+            break;
         }
     }
+    endwin();
 
+}
+
+fn handle_input(window: &Window, game_state: &mut GameState, ui_state: &mut UiState) {
+    match window.getch() {
+            Some(Input::Character(' ')) => {println!("{:?}", window.get_max_yx());},
+            Some(Input::KeyUp) => { ui_state.mv_cursor_up(); },
+            Some(Input::KeyDown) => { ui_state.mv_cursor_down(); },
+            Some(Input::KeyLeft) => { ui_state.mv_cursor_left(); },
+            Some(Input::KeyRight) => { ui_state.mv_cursor_right();  },
+            Some(Input::Character(c)) => { 
+                // due to some weirdness with lib behavior, i have to catch escape and backspace
+                // as u8s instead of using pancurses Input enum
+                match c as u8 {
+                    27 => {game_state.exit = true;},
+                    8 =>  {game_state.exit = true;},
+                    _ => () 
+                }
+            },
+
+            Some(input) => { window.addstr(&format!("something{:?}", input)); },
+            None => ()
+        }
 }
 
 fn curses_fn() {
@@ -349,6 +415,7 @@ fn run_simple_game(words: &HashSet<String>) {
     // TODO: add game logic 
     let mut game_state = GameState {
         won: false,
+        exit: false,
         tries: 0,
         word_list: words.clone(),
         target_word: word_to_guess,
