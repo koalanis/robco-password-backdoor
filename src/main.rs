@@ -7,7 +7,7 @@ use std::char;
 
 
 extern crate pancurses;
-use pancurses::{initscr, Window, endwin, Input, noecho};
+use pancurses::{initscr, set_blink, curs_set, Window,  A_OVERLINE, A_UNDERLINE, A_STANDOUT, A_REVERSE, A_BOLD, endwin, Input, noecho};
 
 
 const NumberWords: u32 = 12;
@@ -157,7 +157,6 @@ impl UiState {
 
     fn init(&mut self, words: Vec<&String>) {
         let mut i = 0;
-        
         // create random ledger
         while i < LEDGER_CAPACITY {
             let rand_idx = rand::thread_rng().gen_range(0..FILLER_CHARS.len());
@@ -274,6 +273,99 @@ impl UiState {
         }
     }
 
+    fn get_char_at_cursor(&self) ->  char {
+        return self.ledger.chars().nth(self.cursor_seek).expect("should get char from ledger");
+    }
+
+    fn get_word_at_cursor(&self) -> Option<usize> {
+        if self.get_char_at_cursor().is_alphabetic() {
+            let mut i = self.cursor_seek;
+            while self.ledger.chars().nth(i).unwrap().is_alphabetic() && i.checked_sub(1).is_some() {
+                i = i.checked_sub(1).unwrap();
+            }
+            let out = if self.ledger.chars().nth(i).unwrap().is_alphabetic() {
+                i
+            } else {
+                i+1
+            };
+            return Some(out)
+        }
+        None
+    }
+
+    fn draw(&self, window: &Window) {
+        let pos = self.get_cursor_ui_pos();
+        let word_at = self.get_word_at_cursor();
+        let at_word = word_at.is_some();
+        let mut draw_offset = self.get_left_ledger_frame();
+        window.refresh();
+        window.mv(draw_offset.1 as i32, draw_offset.0 as i32);
+        for (ith, ch) in self.ledger.chars().take(LEDGER_SIZE*LEDGER_WIDTH).enumerate() {
+            if ith != 0 && ith % LEDGER_WIDTH == 0 {
+                window.addch('\n');
+            }
+            if at_word {
+                let left = word_at.unwrap();
+                let word = self.word_placement.get(&left).unwrap();
+                let right = left + word.len();
+                if left <= ith && ith < right {
+                    let mut attrs = A_REVERSE;
+                    
+                    if ith == self.cursor_seek {
+                        attrs = attrs | A_OVERLINE | A_STANDOUT | A_UNDERLINE;
+                    }
+
+                    window.attron(attrs);
+                    window.addch(ch);
+                    window.attroff(attrs);
+                } else {
+                    window.addch(ch);
+                }
+            } else {
+                window.addch(ch);
+            }
+
+        }
+        
+        draw_offset = self.get_right_ledger_frame();
+        window.mv(draw_offset.1 as i32, draw_offset.0 as i32);
+        for (jth, ch) in self.ledger.chars().skip(LEDGER_SIZE*LEDGER_WIDTH).enumerate() {
+          let ith = jth + (LEDGER_SIZE*LEDGER_WIDTH);
+          if jth != 0 && jth % LEDGER_WIDTH == 0 {
+            window.addch('\n');
+            window.mv(window.get_cur_y(), draw_offset.0 as i32);
+          }
+          if at_word {
+                let left = word_at.unwrap();
+                let word = self.word_placement.get(&left).unwrap();
+                let right = left + word.len();
+                if left <= ith && ith < right {
+                    let mut attrs = A_REVERSE;
+                    
+                    if ith == self.cursor_seek {
+                        attrs = attrs | A_OVERLINE | A_STANDOUT | A_UNDERLINE;
+                    }
+                    window.attron(attrs);
+                    window.addch(ch);
+                    window.attroff(attrs);
+                } else {
+                    window.addch(ch);
+                }
+            } else {
+                window.addch(ch);
+            }
+        }
+
+        window.mv(0,40);
+        let pos_str = format!("curses_pos:: ({},{})", pos.0, pos.1);
+        window.addstr(pos_str);
+        window.mv(10,40);
+        let seek_str = format!("seek:: {}", self.cursor_seek);
+        window.addstr(seek_str);
+
+        window.mv(pos.0, pos.1);
+    }
+
 }
 
 fn hacker_ui(words: &HashSet<String>) {
@@ -326,12 +418,14 @@ fn hacker_ui(words: &HashSet<String>) {
     window.refresh();
     window.keypad(true);
     noecho();
-    
+    set_blink(true);
+    curs_set(1);
 
-    window.printw(ui_state.get_full_ledger());
+    // window.printw(ui_state.get_full_ledger());
     window.mv(0,0);
 
     while game_state.game_on() && !game_state.exit {
+        ui_state.draw(&window);
         let (col, row) = ui_state.get_cursor_ui_pos();
         window.mv(row ,col);
         handle_input(&window, &mut game_state, &mut ui_state); 
@@ -365,12 +459,14 @@ fn handle_input(window: &Window, game_state: &mut GameState, ui_state: &mut UiSt
         }
 }
 
+/*
 fn curses_fn() {
     let window = initscr();
     window.printw("Type things, press delete to quit\n");
     window.refresh();
     window.keypad(true);
     noecho();
+    set_blink(true);
 
     loop {
         match window.getch() {
@@ -398,6 +494,7 @@ fn curses_fn() {
     }
     endwin();
 }
+*/
 
 const TOTAL_TRIES: u16 = 4;
 const DEBUG: bool = true;
