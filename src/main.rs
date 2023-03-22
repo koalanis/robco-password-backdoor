@@ -4,10 +4,10 @@ use rand::seq::SliceRandom;
 use std::fs;
 use std::collections::{HashSet, HashMap};
 use std::char;
-
+use std::ops::Range;
 
 extern crate pancurses;
-use pancurses::{initscr, set_blink, curs_set, Window,  A_OVERLINE, A_UNDERLINE, A_STANDOUT, A_REVERSE, A_BOLD, endwin, Input, noecho};
+use pancurses::{initscr, has_colors, start_color, set_blink, curs_set, A_COLOR,COLOR_PAIR,COLOR_CYAN,COLOR_BLACK, COLOR_YELLOW, init_pair, use_default_colors, Window, A_DIM,  A_OVERLINE, A_UNDERLINE, A_STANDOUT, A_REVERSE, A_BOLD, endwin, Input, noecho};
 
 
 const NumberWords: u32 = 12;
@@ -124,12 +124,21 @@ const LEDGER_CAPACITY: usize = LEDGER_WIDTH * LEDGER_HEIGHT;
 const CURSES_HEIGHT: usize  = LEDGER_HEIGHT + 12;
 const CURSES_WIDTH: usize  = LEDGER_WIDTH  + 12;
 const FILLER_CHARS: &'static str ="(){}[]<>?:;^&$";
+const CLICKABLE_CHARS: &'static str = "({[<";
 
 struct UiState {
     ledger: String,
     word_placement: HashMap<usize, String>,
     cursor_seek: usize,
+    word_size: usize
 }
+
+enum CursorScan {
+    OnWord,
+    OnClickable,
+    OnRegular
+}
+
 
 fn abs_diff(a: usize, b: usize) -> usize {
     if a > b {
@@ -151,7 +160,8 @@ impl UiState {
         UiState {
             ledger: con,
             word_placement: HashMap::new(),
-            cursor_seek: 0
+            cursor_seek: 0,
+            word_size: 0
         }
     }
 
@@ -293,6 +303,144 @@ impl UiState {
         None
     }
 
+    fn get_closing_char_at_cursor(&self) -> Option<usize> {
+        let ch = self.get_char_at_cursor();
+        if CLICKABLE_CHARS.contains(ch) {
+            let looking_for = match ch {
+                '<' => '>',
+                '[' => ']',
+                '(' => ')',
+                '{' => '}',
+                _ => ' '
+            };
+
+            if looking_for == ' ' {
+                return None;
+            }
+
+            let end = self.cursor_seek + (LEDGER_WIDTH - (self.cursor_seek & LEDGER_WIDTH));
+            let mut ith = self.cursor_seek;
+            let mut found = false;
+            while ith < end  && !found {
+                let char_at = self.ledger.chars().nth(ith).unwrap();
+                ith += 1;
+                if char_at == looking_for {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                return Some(ith);
+            }
+            return None
+
+        }
+        None
+    }
+
+    fn check_cursor(&self) -> (CursorScan, Option<Range<usize>>) {
+        let idx = self.cursor_seek;
+        let ch = self.get_char_at_cursor();
+        
+        let out = if ch.is_alphabetic() {
+            let word = self.get_word_at_cursor().expect("Should get index of start of word");
+            (CursorScan::OnWord, Some(word..word+self.word_size))
+        } else if CLICKABLE_CHARS.contains(ch) {
+            let closing = self.get_closing_char_at_cursor();
+            let res = match closing {
+                Some(end) => (CursorScan::OnClickable, Some(idx..end)),
+                None => (CursorScan::OnRegular, None)
+            };
+            res
+        } else {
+            (CursorScan::OnRegular, None) 
+        };
+
+        out
+    }
+
+    fn draw_ledger(&self, window: &Window, highlight: &Option<Range<usize>>) { 
+        let mut draw_offset = self.get_left_ledger_frame();
+        window.mv(draw_offset.1 as i32, draw_offset.0 as i32);
+        let should_highlight = highlight.as_ref().is_some();
+
+        for (ith, ch) in self.ledger.chars().take(LEDGER_SIZE*LEDGER_WIDTH).enumerate() {
+            if ith != 0 && ith % LEDGER_WIDTH == 0 {
+                window.addch('\n');
+            }
+            if should_highlight {
+                let range = highlight.as_ref().unwrap();
+                let left = range.start;
+                let right = range.end;
+                if left <= ith && ith < right {
+                    let mut attrs = A_REVERSE;
+                    
+                    if ith == self.cursor_seek {
+                        attrs = attrs | COLOR_PAIR(1);
+                    }
+
+                    window.attron(attrs);
+                    window.addch(ch);
+                    window.attroff(attrs);
+                } else {
+                    window.addch(ch);
+                }
+            } else {
+                window.addch(ch);
+            }
+
+        }
+        
+        draw_offset = self.get_right_ledger_frame();
+        window.mv(draw_offset.1 as i32, draw_offset.0 as i32);
+        for (jth, ch) in self.ledger.chars().skip(LEDGER_SIZE*LEDGER_WIDTH).enumerate() {
+          let ith = jth + (LEDGER_SIZE*LEDGER_WIDTH);
+          if jth != 0 && jth % LEDGER_WIDTH == 0 {
+            window.addch('\n');
+            window.mv(window.get_cur_y(), draw_offset.0 as i32);
+          }
+          if should_highlight {
+                let range = highlight.as_ref().unwrap();
+                let left = range.start;
+                let right = range.end;
+                if left <= ith && ith < right {
+                    let mut attrs = A_REVERSE;
+                    
+                    if ith == self.cursor_seek {
+                        attrs = attrs | COLOR_PAIR(1);
+                    }
+
+                    window.attron(attrs);
+                    window.addch(ch);
+                    window.attroff(attrs);
+                } else {
+                    window.addch(ch);
+                }
+            } else {
+                window.addch(ch);
+            }
+        }
+
+
+    }
+    
+    fn draw(&self, window: &Window) {
+        let pos = self.get_cursor_ui_pos();
+        let scan = self.check_cursor();
+        
+        self.draw_ledger(window, &scan.1);
+        
+        window.mv(0,40);
+        let pos_str = format!("curses_pos:: ({},{})", pos.0, pos.1);
+        window.addstr(pos_str);
+        window.mv(10,40);
+        let seek_str = format!("seek:: {}", self.cursor_seek);
+        window.addstr(seek_str);
+
+        window.mv(pos.0, pos.1);
+    }
+
+/*
     fn draw(&self, window: &Window) {
         let pos = self.get_cursor_ui_pos();
         let word_at = self.get_word_at_cursor();
@@ -343,7 +491,7 @@ impl UiState {
                     let mut attrs = A_REVERSE;
                     
                     if ith == self.cursor_seek {
-                        attrs = attrs | A_OVERLINE | A_STANDOUT | A_UNDERLINE;
+                        attrs = A_OVERLINE | A_STANDOUT | A_UNDERLINE;
                     }
                     window.attron(attrs);
                     window.addch(ch);
@@ -365,7 +513,7 @@ impl UiState {
 
         window.mv(pos.0, pos.1);
     }
-
+*/
 }
 
 fn hacker_ui(words: &HashSet<String>) {
@@ -376,7 +524,7 @@ fn hacker_ui(words: &HashSet<String>) {
                 .cloned()
                 .map(|x| x.to_string())
                 .expect("Should have selected a word from list."); 
-    
+   let word_size = word_to_guess.len(); 
     if DEBUG {
         println!("word to guess is {:?}", &word_to_guess);
     }
@@ -390,11 +538,11 @@ fn hacker_ui(words: &HashSet<String>) {
         target_word: word_to_guess,
         used_words: HashSet::new()
     };
-
     // init ui state
     let mut ui_state = UiState::new();
 
     ui_state.init(word_list);
+    ui_state.word_size = word_size;
 
     let mut agg = String::new();
     let mut choices: Vec<String> = game_state.get_available_choices()
@@ -417,10 +565,16 @@ fn hacker_ui(words: &HashSet<String>) {
     let window = initscr();
     window.refresh();
     window.keypad(true);
+    if has_colors() {
+        start_color();
+    }
+
     noecho();
     set_blink(true);
     curs_set(1);
-
+    use_default_colors();
+    init_pair(1,COLOR_BLACK, COLOR_CYAN);
+    
     // window.printw(ui_state.get_full_ledger());
     window.mv(0,0);
 
