@@ -130,7 +130,8 @@ struct UiState {
     ledger: String,
     word_placement: HashMap<usize, String>,
     cursor_seek: usize,
-    word_size: usize
+    word_size: usize,
+    side_log: Vec<String>
 }
 
 enum CursorScan {
@@ -161,7 +162,8 @@ impl UiState {
             ledger: con,
             word_placement: HashMap::new(),
             cursor_seek: 0,
-            word_size: 0
+            word_size: 0,
+            side_log: Vec::new()
         }
     }
 
@@ -420,8 +422,16 @@ impl UiState {
                 window.addch(ch);
             }
         }
+    }
 
+    fn get_side_log_frame(&self) -> (usize, usize, usize, usize) {
+        let rf = self.get_right_ledger_frame();
 
+        (rf.0+5, rf.1, rf.2 + 20, rf.3)
+    }
+
+    fn draw_side_log(&self, window: &Window) {
+        
     }
     
     fn draw(&self, window: &Window) {
