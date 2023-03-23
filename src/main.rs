@@ -317,7 +317,7 @@ impl UiState {
             if looking_for == ' ' {
                 return None;
             }
-
+            //FIXME: this logic isnt working correctly
             let end = self.cursor_seek + (LEDGER_WIDTH - (self.cursor_seek & LEDGER_WIDTH));
             let mut ith = self.cursor_seek;
             let mut found = false;
