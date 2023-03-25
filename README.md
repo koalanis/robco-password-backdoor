@@ -9,6 +9,7 @@ Developed by Vault-Tek corporate spies to provide a backdoor access to RobCo ter
 
 ## Info
 ![screenshot](https://user-images.githubusercontent.com/5452212/227697672-51b09100-18b1-4bbe-9758-2f14771aba5b.png)
+
 Try with cool-retro-term for maxixmum effect. 
 
 #### Requires
