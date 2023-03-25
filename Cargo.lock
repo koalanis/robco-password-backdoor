@@ -117,7 +117,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "robco-password-backdoor"
+name = "robco-termlink-protocol"
 version = "0.1.0"
 dependencies = [
  "pancurses",
