@@ -5,22 +5,20 @@ use std::fs;
 use std::collections::{HashSet, HashMap};
 use std::char;
 use std::ops::Range;
+use std::process::ExitCode;
+
 
 extern crate pancurses;
 use pancurses::{initscr, has_colors, start_color, set_blink, curs_set, A_COLOR,COLOR_PAIR,COLOR_CYAN,COLOR_BLACK, COLOR_YELLOW, init_pair, use_default_colors, Window, A_DIM,  A_OVERLINE, A_UNDERLINE, A_STANDOUT, A_REVERSE, A_BOLD, endwin, Input, noecho};
 
 
-const NumberWords: u32 = 12;
+const NUMBER_WORDS: u32 = 12;
 
-fn main() {
-    println!("Hello, world!");
-    // let diff = Difficulty::VeryHard;
+fn main() -> ExitCode{
     let diff = get_random_difficulty();
 
     let val = get_size(diff);
     let path = get_dict_path(val).expect("Should resolve dictionary path for difficulty");
-    println!("{:?}",val);
-    println!("{:?}",path);
    
     let words = fs::read_to_string(path).expect("Should be able to read file");
     let bank = words.split("\n").collect::<Vec<&str>>();
@@ -28,7 +26,7 @@ fn main() {
     
     let mut count = 0;
     let mut indices = HashSet::new();
-    while count < NumberWords {
+    while count < NUMBER_WORDS {
         let rand_idx = rand::thread_rng().gen_range(0..length);
         if !indices.contains(&rand_idx) {
             indices.insert(rand_idx);
@@ -39,7 +37,11 @@ fn main() {
     let words: HashSet<String>  = indices.into_iter().map(|x| bank[x].to_string()).collect();
     
 
-    hacker_ui(&words);
+    if(hacker_ui(&words)) {
+        ExitCode::SUCCESS        
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 
@@ -58,6 +60,11 @@ enum TryResult {
     Incorrect
 }
 
+enum ClickableReward {
+    ResetAttempts,
+    RemoveWord
+}
+
 impl GameState {
 
     fn do_try(&mut self, attempt: String) -> TryResult {
@@ -73,14 +80,16 @@ impl GameState {
 
         match resp {
             TryResult::Invalid => (),
-            _ => self.tries += 1 
+            _ => if self.tries > 0 {
+                self.tries -= 1;
+            }
         }
 
         resp
     }
 
     fn game_on(&self) -> bool {
-        return self.tries < TOTAL_TRIES && !self.won;
+        return self.tries > 0 && !self.won;
     }
 
     fn get_available_choices(&self) -> HashSet<String> {
@@ -103,7 +112,7 @@ impl GameState {
 
 
     fn reset_attempts(&mut self) {
-        self.tries = 0;
+        self.tries = TOTAL_TRIES;
     }
 
     fn get_attempt_score(&self, attempt: String) -> u32 {
@@ -115,8 +124,18 @@ impl GameState {
         }
         score
     }
+
+    fn random_clickable_reward() -> ClickableReward {
+        let b = rand::random::<bool>();
+        if b {
+            ClickableReward::ResetAttempts
+        } else {
+            ClickableReward::RemoveWord
+        }
+    }
 }
 
+const LEDGER_OFFSET_Y:usize = 5;
 const LEDGER_SIZE: usize  = 17;
 const LEDGER_HEIGHT: usize  = LEDGER_SIZE * 2;
 const LEDGER_WIDTH: usize  = 12;
@@ -139,7 +158,6 @@ enum CursorScan {
     OnClickable,
     OnRegular
 }
-
 
 fn abs_diff(a: usize, b: usize) -> usize {
     if a > b {
@@ -167,6 +185,10 @@ impl UiState {
         }
     }
 
+    fn add_log(&mut self, log_statement: String) {
+        self.side_log.push(log_statement);
+    }
+
     fn init(&mut self, words: Vec<&String>) {
         let mut i = 0;
         // create random ledger
@@ -176,7 +198,6 @@ impl UiState {
             self.ledger.replace_range(i..i+1, &rand_ch.to_string());
             i += 1;
         }
-
 
         let mut set: HashSet<usize> = HashSet::new();
         for word in words {
@@ -230,11 +251,81 @@ impl UiState {
     }
     
     fn get_left_ledger_frame(&self) -> (usize, usize, usize, usize) {
-        (0,0,LEDGER_WIDTH, LEDGER_SIZE)
+         (0,0+LEDGER_OFFSET_Y,LEDGER_WIDTH, LEDGER_SIZE+LEDGER_OFFSET_Y)
     }
 
     fn get_right_ledger_frame(&self) -> (usize, usize, usize, usize) {
-        (LEDGER_WIDTH+1, 0, LEDGER_WIDTH+1+LEDGER_WIDTH, LEDGER_SIZE)
+        (LEDGER_WIDTH+1, 0+LEDGER_OFFSET_Y, LEDGER_WIDTH+1+LEDGER_WIDTH, LEDGER_SIZE+LEDGER_OFFSET_Y)
+    }
+    
+    fn handle_enter(&mut self, game_state: &mut GameState) {
+        let scan = self.check_cursor();
+        match scan.0 {
+            CursorScan::OnWord => {
+                let word = self.get_word_at_cursor();
+                if word.is_some() {
+                    let beg = word.unwrap();
+                    let at_word = self.word_placement.get(&beg).unwrap();
+                    self.handle_enter_on_word(game_state, beg.clone(), at_word.to_string());
+                }
+            },
+            CursorScan::OnClickable => {
+                let closing = self.get_closing_char_at_cursor();
+                if closing.is_some() {
+                    let range = (self.cursor_seek, closing.unwrap());
+                    self.handle_enter_on_clickable(game_state, range);
+                } else {
+                    self.add_log(format!("Invalid Token: {:?}", self.get_char_at_cursor()));
+                }
+            },
+            _ => {
+                self.add_log(format!("Invalid Token: {:?}", self.get_char_at_cursor()));
+            }
+        }
+    }
+
+    fn handle_enter_on_word(&mut self, game_state: &mut GameState, idx: usize, word: String) {
+        let try_attempt = game_state.do_try(word.to_string());
+        match try_attempt {
+            TryResult::Incorrect => {
+                self.add_log(format!("Password Incorrect: {:?}", word));
+                let score = game_state.get_attempt_score(word.clone());
+                self.add_log(format!("{}/{} correct", score, self.word_size));
+            },
+            _ => ()
+        }
+    }
+
+    fn handle_enter_on_clickable(&mut self, game_state: &mut GameState, range: (usize, usize)) {
+        let ch = self.get_char_at_cursor();
+        let reward = GameState::random_clickable_reward();
+        match reward {
+            ClickableReward::RemoveWord => {
+                let to_remove = game_state.remove_choice();
+                self.add_log(String::from("Remove dud"));
+                let mut to_remove_key = None;
+                for (key, val) in &self.word_placement {
+                    if val.clone() == to_remove {
+                        to_remove_key = Some(key);
+                    }
+                }
+
+                if to_remove_key.is_some() {
+                    let key = to_remove_key.unwrap();
+                    let range = key..&(key+self.word_size);
+                    self.ledger.replace_range(range, &".".repeat(self.word_size));
+                    
+                    self.word_placement.remove(&key.clone());
+
+                }
+            },
+            ClickableReward::ResetAttempts => {
+                game_state.reset_attempts();
+                self.add_log(String::from("Reset attempts"));
+            }
+        }
+
+        self.ledger.replace_range(self.cursor_seek..self.cursor_seek+1, ".");
     }
 
     fn get_cursor_ui_pos(&self) -> (i32, i32) {
@@ -319,11 +410,11 @@ impl UiState {
             if looking_for == ' ' {
                 return None;
             }
-            //FIXME: this logic isnt working correctly
-            let end = self.cursor_seek + (LEDGER_WIDTH - (self.cursor_seek & LEDGER_WIDTH));
+
+            let end = self.cursor_seek + (LEDGER_WIDTH - (self.cursor_seek %  LEDGER_WIDTH));
             let mut ith = self.cursor_seek;
             let mut found = false;
-            while ith < end  && !found {
+            while ith < end && ith < self.ledger.len() && !found {
                 let char_at = self.ledger.chars().nth(ith).unwrap();
                 ith += 1;
                 if char_at == looking_for {
@@ -335,15 +426,13 @@ impl UiState {
                 return Some(ith);
             }
             return None
-
         }
         None
     }
 
-    fn check_cursor(&self) -> (CursorScan, Option<Range<usize>>) {
+    fn check_cursor(& self) -> (CursorScan, Option<Range<usize>>) {
         let idx = self.cursor_seek;
         let ch = self.get_char_at_cursor();
-        
         let out = if ch.is_alphabetic() {
             let word = self.get_word_at_cursor().expect("Should get index of start of word");
             (CursorScan::OnWord, Some(word..word+self.word_size))
@@ -357,8 +446,18 @@ impl UiState {
         } else {
             (CursorScan::OnRegular, None) 
         };
-
         out
+    }
+    
+    fn draw_heading(&self, window:&Window) {
+        window.mv(0,0);
+        window.addstr(String::from("ROBCO INDUSTRIES (TM) TERMLINK PROTOCOL\n"));
+        window.addstr(String::from("!!! WARNING: LOCKOUT IMMINENT !!! (Press q to quit)\n"));
+    }
+
+    fn draw_attempts(&self, window:&Window, game_state: &GameState) {
+        window.mv(3, 0);
+        window.addstr(format!("{} ATTEMPT(S) LEFT: {}", game_state.tries, "# ".repeat(game_state.tries as usize)));
     }
 
     fn draw_ledger(&self, window: &Window, highlight: &Option<Range<usize>>) { 
@@ -427,106 +526,36 @@ impl UiState {
     fn get_side_log_frame(&self) -> (usize, usize, usize, usize) {
         let rf = self.get_right_ledger_frame();
 
-        (rf.0+5, rf.1, rf.2 + 20, rf.3)
+        (rf.2+5, rf.1, rf.2 + 20, rf.3)
     }
 
     fn draw_side_log(&self, window: &Window) {
-        
+        let frame = self.get_side_log_frame();
+        window.mv(30, 30);
+        let take_n = frame.3;
+        let mut pos = (frame.3 as i32, frame.0 as i32);
+        pos = (pos.0-1, pos.1);
+        for line in self.side_log.iter().rev().take(take_n) {
+            window.mv(pos.0 , pos.1);
+            window.addstr(line);
+            pos = (pos.0-1,frame.0 as i32);
+        }
     }
     
-    fn draw(&self, window: &Window) {
+    fn draw(&self, window: &Window, game_state: &GameState) {
         let pos = self.get_cursor_ui_pos();
         let scan = self.check_cursor();
-        
+        window.clear();
+        self.draw_heading(window);
+        self.draw_attempts(window, game_state);
         self.draw_ledger(window, &scan.1);
-        
-        window.mv(0,40);
-        let pos_str = format!("curses_pos:: ({},{})", pos.0, pos.1);
-        window.addstr(pos_str);
-        window.mv(10,40);
-        let seek_str = format!("seek:: {}", self.cursor_seek);
-        window.addstr(seek_str);
-
+        self.draw_side_log(window); 
         window.mv(pos.0, pos.1);
-    }
-
-/*
-    fn draw(&self, window: &Window) {
-        let pos = self.get_cursor_ui_pos();
-        let word_at = self.get_word_at_cursor();
-        let at_word = word_at.is_some();
-        let mut draw_offset = self.get_left_ledger_frame();
         window.refresh();
-        window.mv(draw_offset.1 as i32, draw_offset.0 as i32);
-        for (ith, ch) in self.ledger.chars().take(LEDGER_SIZE*LEDGER_WIDTH).enumerate() {
-            if ith != 0 && ith % LEDGER_WIDTH == 0 {
-                window.addch('\n');
-            }
-            if at_word {
-                let left = word_at.unwrap();
-                let word = self.word_placement.get(&left).unwrap();
-                let right = left + word.len();
-                if left <= ith && ith < right {
-                    let mut attrs = A_REVERSE;
-                    
-                    if ith == self.cursor_seek {
-                        attrs = attrs | A_OVERLINE | A_STANDOUT | A_UNDERLINE;
-                    }
-
-                    window.attron(attrs);
-                    window.addch(ch);
-                    window.attroff(attrs);
-                } else {
-                    window.addch(ch);
-                }
-            } else {
-                window.addch(ch);
-            }
-
-        }
-        
-        draw_offset = self.get_right_ledger_frame();
-        window.mv(draw_offset.1 as i32, draw_offset.0 as i32);
-        for (jth, ch) in self.ledger.chars().skip(LEDGER_SIZE*LEDGER_WIDTH).enumerate() {
-          let ith = jth + (LEDGER_SIZE*LEDGER_WIDTH);
-          if jth != 0 && jth % LEDGER_WIDTH == 0 {
-            window.addch('\n');
-            window.mv(window.get_cur_y(), draw_offset.0 as i32);
-          }
-          if at_word {
-                let left = word_at.unwrap();
-                let word = self.word_placement.get(&left).unwrap();
-                let right = left + word.len();
-                if left <= ith && ith < right {
-                    let mut attrs = A_REVERSE;
-                    
-                    if ith == self.cursor_seek {
-                        attrs = A_OVERLINE | A_STANDOUT | A_UNDERLINE;
-                    }
-                    window.attron(attrs);
-                    window.addch(ch);
-                    window.attroff(attrs);
-                } else {
-                    window.addch(ch);
-                }
-            } else {
-                window.addch(ch);
-            }
-        }
-
-        window.mv(0,40);
-        let pos_str = format!("curses_pos:: ({},{})", pos.0, pos.1);
-        window.addstr(pos_str);
-        window.mv(10,40);
-        let seek_str = format!("seek:: {}", self.cursor_seek);
-        window.addstr(seek_str);
-
-        window.mv(pos.0, pos.1);
     }
-*/
 }
 
-fn hacker_ui(words: &HashSet<String>) {
+fn hacker_ui(words: &HashSet<String>) -> bool {
 
         
     let word_list:Vec<_> = words.into_iter().collect();
@@ -534,16 +563,14 @@ fn hacker_ui(words: &HashSet<String>) {
                 .cloned()
                 .map(|x| x.to_string())
                 .expect("Should have selected a word from list."); 
-   let word_size = word_to_guess.len(); 
-    if DEBUG {
-        println!("word to guess is {:?}", &word_to_guess);
-    }
-   
+  
+    let word_size = word_to_guess.len(); 
+
     // init game state
     let mut game_state = GameState {
         won: false,
         exit: false,
-        tries: 0,
+        tries: TOTAL_TRIES,
         word_list: words.clone(),
         target_word: word_to_guess,
         used_words: HashSet::new()
@@ -553,23 +580,6 @@ fn hacker_ui(words: &HashSet<String>) {
 
     ui_state.init(word_list);
     ui_state.word_size = word_size;
-
-    let mut agg = String::new();
-    let mut choices: Vec<String> = game_state.get_available_choices()
-                .into_iter()
-                .collect();
-
-    choices.sort();   
-    
-    for choice in choices {
-        agg.push_str(&choice);
-        agg.push_str(" ");
-    }
-        
-    println!("{}", agg);
-    println!();
-    println!("{}",ui_state.get_full_ledger());
-
 
     // init ncurses
     let window = initscr();
@@ -589,7 +599,7 @@ fn hacker_ui(words: &HashSet<String>) {
     window.mv(0,0);
 
     while game_state.game_on() && !game_state.exit {
-        ui_state.draw(&window);
+        ui_state.draw(&window, &game_state);
         let (col, row) = ui_state.get_cursor_ui_pos();
         window.mv(row ,col);
         handle_input(&window, &mut game_state, &mut ui_state); 
@@ -598,16 +608,27 @@ fn hacker_ui(words: &HashSet<String>) {
         }
     }
     endwin();
+    
+    if game_state.won {
+        //TODO: Could add animation on win here
+        println!("Hacking complete...!\nAccess granted.");
+        return true;
+    } else {
+        println!("Access denied");
+        return false;
+    }
+    
 
 }
 
 fn handle_input(window: &Window, game_state: &mut GameState, ui_state: &mut UiState) {
     match window.getch() {
-            Some(Input::Character(' ')) => {println!("{:?}", window.get_max_yx());},
             Some(Input::KeyUp) => { ui_state.mv_cursor_up(); },
             Some(Input::KeyDown) => { ui_state.mv_cursor_down(); },
             Some(Input::KeyLeft) => { ui_state.mv_cursor_left(); },
             Some(Input::KeyRight) => { ui_state.mv_cursor_right();  },
+            Some(Input::Character('\n')) => { ui_state.handle_enter(game_state);  },
+            Some(Input::Character('q')) => {game_state.exit = true; },
             Some(Input::Character(c)) => { 
                 // due to some weirdness with lib behavior, i have to catch escape and backspace
                 // as u8s instead of using pancurses Input enum
@@ -617,9 +638,7 @@ fn handle_input(window: &Window, game_state: &mut GameState, ui_state: &mut UiSt
                     _ => () 
                 }
             },
-
-            Some(input) => { window.addstr(&format!("something{:?}", input)); },
-            None => ()
+            _ | None => ()
         }
 }
 
