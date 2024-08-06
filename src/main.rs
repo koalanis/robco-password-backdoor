@@ -11,10 +11,49 @@ use std::process::ExitCode;
 extern crate pancurses;
 use pancurses::{initscr, has_colors, start_color, set_blink, curs_set, A_COLOR,COLOR_PAIR,COLOR_CYAN,COLOR_BLACK, COLOR_YELLOW, init_pair, use_default_colors, Window, A_DIM,  A_OVERLINE, A_UNDERLINE, A_STANDOUT, A_REVERSE, A_BOLD, endwin, Input, noecho};
 
-
+// The number of words in the hacking minigame
 const NUMBER_WORDS: u32 = 12;
+// The number of ncurse cells that the hacking game is offset by from the top of the terminal
+const LEDGER_OFFSET_Y:usize = 5;
+/*
+The size of a single ledger in the hacking minigame. A ledger is one side of the gaming minigame.
+The game has two ledgers but it is represented in an single array of characters
 
-fn main() -> ExitCode{
+:>?&pepsinog nterceptable
+enous<^:&$^: }?>(&;perime
+nondefensibl dullary{&${;
+y<}:?]>[>>[] {??(];&;{]ma
+{>]<?}^(^;>> gnetisation}
+}$[$^$)(()${ ^protectioni
+^^(>[??{<<:: sm)$&$dichot
+)((:[):)&}}) omizing&]{&;
+)(noncommitm {&<semipecti
+ent?&<]&>^$( nate})$<{&<^
+}]^][]]<:^]] ))?:)]{]$()^
+&::[&}&[rhad ?(][?$:?${;)
+amanthine?(: nonmysticall
+})(}<{$&]>); y[];(^>;}{?<
+}}]$])[&(}:^ ^<>&&(>^<}[p
+}>;:]:{<[<&) igmentophage
+:{}(:??>([;i (&((<$)[[<:(
+
+ */
+const LEDGER_SIZE: usize  = 17;
+// The total ledger height, in terms of the array representation in memory
+const LEDGER_HEIGHT: usize  = LEDGER_SIZE * 2;
+// The ledger's width
+const LEDGER_WIDTH: usize  = 12;
+// total number of characters in the ledger board
+const LEDGER_CAPACITY: usize = LEDGER_WIDTH * LEDGER_HEIGHT;
+// the sample of chars used for the "filler" chars in the ledger
+const FILLER_CHARS: &'static str ="(){}[]<>?:;^&$";
+// the sample of chars that are the opening char of a clickable token
+const CLICKABLE_CHARS: &'static str = "({[<";
+// max number of attempts in a game session
+const TOTAL_TRIES: u16 = 4;
+
+// the program entry point
+fn main() -> ExitCode {
     let diff = get_random_difficulty();
 
     let val = get_size(diff);
@@ -44,7 +83,9 @@ fn main() -> ExitCode{
     }
 }
 
-
+/*
+    Struct used to represent the guessing game aspect of the hacking minigame
+*/
 struct GameState {
     won: bool,
     exit: bool,
@@ -54,12 +95,14 @@ struct GameState {
     used_words: HashSet<String>
 }
 
-enum TryResult {
+// Enum representing the outcome of a guessing / hacking attempt
+enum AttemptResult {
     Correct,
     Invalid,
     Incorrect
 }
 
+// Enum representing the possible rewards/outcomes from pressing a clickable element in the game
 enum ClickableReward {
     ResetAttempts,
     RemoveWord
@@ -67,19 +110,19 @@ enum ClickableReward {
 
 impl GameState {
 
-    fn do_try(&mut self, attempt: String) -> TryResult {
+    fn do_try(&mut self, attempt: String) -> AttemptResult {
         let resp = if self.target_word == attempt {
             self.won = true;
-            TryResult::Correct
+            AttemptResult::Correct
         } else if self.word_list.contains(&attempt) && !self.used_words.contains(&attempt){
-            TryResult::Incorrect
+            AttemptResult::Incorrect
         } else {
             self.reset_attempts();
-            TryResult::Invalid
+            AttemptResult::Invalid
         };
 
         match resp {
-            TryResult::Invalid => (),
+            AttemptResult::Invalid => (),
             _ => if self.tries > 0 {
                 self.tries -= 1;
             }
@@ -110,7 +153,6 @@ impl GameState {
         to_remove.to_string()
     }
 
-
     fn reset_attempts(&mut self) {
         self.tries = TOTAL_TRIES;
     }
@@ -134,17 +176,6 @@ impl GameState {
         }
     }
 }
-
-const LEDGER_OFFSET_Y:usize = 5;
-const LEDGER_SIZE: usize  = 17;
-const LEDGER_HEIGHT: usize  = LEDGER_SIZE * 2;
-const LEDGER_WIDTH: usize  = 12;
-const LEDGER_CAPACITY: usize = LEDGER_WIDTH * LEDGER_HEIGHT;
-const CURSES_HEIGHT: usize  = LEDGER_HEIGHT + 12;
-const CURSES_WIDTH: usize  = LEDGER_WIDTH  + 12;
-const FILLER_CHARS: &'static str ="(){}[]<>?:;^&$";
-const CLICKABLE_CHARS: &'static str = "({[<";
-
 struct UiState {
     ledger: String,
     word_placement: HashMap<usize, String>,
@@ -159,6 +190,7 @@ enum CursorScan {
     OnRegular
 }
 
+// Returns the absolute value of the difference between a and b
 fn abs_diff(a: usize, b: usize) -> usize {
     if a > b {
         a - b
@@ -287,7 +319,7 @@ impl UiState {
     fn handle_enter_on_word(&mut self, game_state: &mut GameState, idx: usize, word: String) {
         let try_attempt = game_state.do_try(word.to_string());
         match try_attempt {
-            TryResult::Incorrect => {
+            AttemptResult::Incorrect => {
                 self.add_log(format!("Password Incorrect: {:?}", word));
                 let score = game_state.get_attempt_score(word.clone());
                 self.add_log(format!("{}/{} correct", score, self.word_size));
@@ -555,10 +587,11 @@ impl UiState {
     }
 }
 
+// Procedure that starts the hacking mingame, given a set of words
 fn hacker_ui(words: &HashSet<String>) -> bool {
-
-        
     let word_list:Vec<_> = words.into_iter().collect();
+
+    // select random word to be target word
     let word_to_guess = word_list.choose(&mut rand::thread_rng())
                 .cloned()
                 .map(|x| x.to_string())
@@ -577,7 +610,6 @@ fn hacker_ui(words: &HashSet<String>) -> bool {
     };
     // init ui state
     let mut ui_state = UiState::new();
-
     ui_state.init(word_list);
     ui_state.word_size = word_size;
 
@@ -617,8 +649,6 @@ fn hacker_ui(words: &HashSet<String>) -> bool {
         println!("Access denied");
         return false;
     }
-    
-
 }
 
 fn handle_input(window: &Window, game_state: &mut GameState, ui_state: &mut UiState) {
@@ -642,119 +672,7 @@ fn handle_input(window: &Window, game_state: &mut GameState, ui_state: &mut UiSt
         }
 }
 
-/*
-fn curses_fn() {
-    let window = initscr();
-    window.printw("Type things, press delete to quit\n");
-    window.refresh();
-    window.keypad(true);
-    noecho();
-    set_blink(true);
-
-    loop {
-        match window.getch() {
-            Some(Input::Character(' ')) => {println!("{:?}", window.get_max_yx());},
-            Some(Input::KeyUp) => { window.mv(window.get_cur_y()-1, window.get_cur_x());},
-            Some(Input::KeyDown) => { window.mv(window.get_cur_y()+1, window.get_cur_x());},
-            Some(Input::KeyLeft) => { window.mv(window.get_cur_y(), window.get_cur_x()-1);},
-            Some(Input::KeyRight) => { window.mv(window.get_cur_y(), window.get_cur_x()+1);},
-            Some(Input::KeyResize) => break,
-            Some(Input::Character(c)) => { 
-
-                match c as u8 {
-                    27 => break,
-                    8 => break,
-                    _ => { 
-                        println!("{c}");
-                        window.addch(c as char);
-                     }
-                }
-            },
-
-            Some(input) => { window.addstr(&format!("something{:?}", input)); },
-            None => ()
-        }
-    }
-    endwin();
-}
-*/
-
-const TOTAL_TRIES: u16 = 4;
-const DEBUG: bool = true;
-fn run_simple_game(words: &HashSet<String>) {
-    
-    let word_list:Vec<_> = words.into_iter().collect();
-    let word_to_guess = word_list.choose(&mut rand::thread_rng())
-                .cloned().map(|x| x.to_string())
-                .expect("Should have selected a word from list."); 
-    
-    if DEBUG {
-        println!("word to guess is {:?}", &word_to_guess);
-    }
-    
-    // TODO: add game logic 
-    let mut game_state = GameState {
-        won: false,
-        exit: false,
-        tries: 0,
-        word_list: words.clone(),
-        target_word: word_to_guess,
-        used_words: HashSet::new()
-    };
-
-    while game_state.game_on() {
-        let mut agg = String::new();
-        let mut choices: Vec<String> = game_state.get_available_choices()
-                .into_iter()
-                .collect();
-
-        choices.sort();
-        
-        for choice in choices {
-            agg.push_str(&choice);
-            agg.push_str(" ");
-        }
-        
-        println!("Valid choices are :: {agg}");
-        println!("You have {0} attempt(s) left", TOTAL_TRIES - game_state.tries);
-
-        println!();
-        let mut line = String::new();
-        println!("Enter your guess :");
-        std::io::stdin()
-                .read_line(&mut line)
-                .expect("Should get text from stdin");
-        println!("Your guess is {}", line);
-        println!();
-        line = line.trim().to_string();
-
-        if line == "q" {
-            game_state.won = true;
-        }
-
-        let resp = game_state.do_try(line.clone());
-        match resp {
-            TryResult::Correct => handle_correct_guess(),
-            TryResult::Incorrect => handle_incorrect_guess(game_state.get_attempt_score(line.clone())),
-            TryResult::Invalid => handle_invalid_guess()
-        }
-    }
-
-    // curses_fn();
-}
-
-fn handle_correct_guess() {
-    println!("Hacking successful!");
-}
-
-fn handle_incorrect_guess(score: u32) {
-    println!("You made an incorrect guess: Score={score}");
-}
-
-fn handle_invalid_guess() {
-    println!("You made an invalid guess");
-}
-
+// Enum which represents the difficulty setting of the hacking minigame
 #[derive(Debug)]
 enum Difficulty {
     VeryEasy,
@@ -764,6 +682,7 @@ enum Difficulty {
     VeryHard
 }
 
+// Support for randomness by implementing distribution for Difficulty enum
 impl Distribution<Difficulty> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Difficulty {
         match rng.gen_range(0..5) {
@@ -776,6 +695,7 @@ impl Distribution<Difficulty> for Standard {
     }
 }
 
+// Returns a random word size given a difficulty enum
 fn get_size(difficulty: Difficulty) -> u32 {
     let range = match difficulty {
         Difficulty::VeryEasy => 4..5,
@@ -789,14 +709,13 @@ fn get_size(difficulty: Difficulty) -> u32 {
     size
 }
 
+// Returns a random Difficulty enum
 fn get_random_difficulty() -> Difficulty {
-    
     let diff: Difficulty = rand::random();
-    println!("{:?}", diff);
-
     diff
 }
 
+// Returns the path of a dictionary file with a bunch of words with target word_size
 fn get_dict_path(word_size: u32) -> Option<String> {
     match word_size {
         4 => Some(String::from("./data/ve-4.txt")),
@@ -814,8 +733,3 @@ fn get_dict_path(word_size: u32) -> Option<String> {
         _ => None
     }
 }
-
-
-
-
-
